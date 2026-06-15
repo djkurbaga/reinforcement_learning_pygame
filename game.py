@@ -223,7 +223,7 @@ def main():
     arena_obj = arena.Arena()
     kol = kol_bagla()
     oyuncu = Player(arena_obj.orta_platform_x(), arena.ZEMIN_Y)
-    patron = Boss()
+    patron = Boss(arena_obj)
 
     tam_ekran = False
     onceki = {"space": False, "dash": False, "heal": False,
@@ -249,7 +249,8 @@ def main():
                                                      pygame.RESIZABLE))
                 elif olay.key == pygame.K_r and (oyuncu.olu or patron.olu):
                     oyuncu.tam_sifirla()
-                    patron = Boss()
+                    arena_obj = arena.Arena()      # batık platformlar geri gelsin
+                    patron = Boss(arena_obj)
                 elif olay.key == pygame.K_g:
                     oyuncu.olumsuz = not oyuncu.olumsuz
 

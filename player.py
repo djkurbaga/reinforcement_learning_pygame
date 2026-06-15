@@ -108,6 +108,7 @@ class Player:
 
         # Silk
         self.silk = MAKS_SILK     # DEBUG: patron gelince 0 yap
+        self.silk_bekleme = 0.0   # aynı vuruşta çoklu silk kazanmayı engeller
         self.heal_kalan = 0.0     # >0 ise odaklanıyor
         self.heal_baslangic_can = 0
 
@@ -134,13 +135,19 @@ class Player:
         self.dash_kullanildi = False
         self.kosuyor = False
         self.silk = MAKS_SILK   # DEBUG
+        self.silk_bekleme = 0.0
         self.heal_kalan = 0.0
         self.silkspear_zaman = 0.0
         self.silkspear_bekleme = self.silkspear_aski = 0.0
         self._spear_bekliyor = False
 
-    def isinla_orta(self):
-        self.rect.centerx = self.isinma_x
+    def isinla_orta(self, arena_obj=None):
+        # Eğer arena verildiyse mevcut (batık olmayan) platformlardan birini
+        # hedef al; yoksa sabit isinma_x'i kullan (oyun başlangıcı vb.).
+        if arena_obj is not None:
+            self.rect.centerx = arena_obj.orta_platform_x()
+        else:
+            self.rect.centerx = self.isinma_x
         self.rect.bottom = arena.ZEMIN_Y
         self.vx = self.vy = 0.0
         # Lavadan ışınlanınca heal/dash/spear modları iptal olur
@@ -149,7 +156,12 @@ class Player:
         self.silkspear_aski = 0.0
 
     def silk_kazan(self, miktar=1):
-        self.silk = min(MAKS_SILK, self.silk + miktar)
+        # Saldırı kısmi tüketim sırasında bir-iki kare daha çarpışma
+        # tetiklenebilir; kısa bir cooldown ile aynı vuruşun çoklu silk
+        # vermesini engelle.
+        if self.silk_bekleme <= 0:
+            self.silk = min(MAKS_SILK, self.silk + miktar)
+            self.silk_bekleme = 0.2
 
     def saldir(self):
         if self.saldiri_bekleme <= 0:
@@ -192,7 +204,7 @@ class Player:
         for attr in ("dokunulmaz", "saldiri_zaman", "saldiri_bekleme",
                      "dash_kalan", "dash_bekleme",
                      "silkspear_bekleme", "silkspear_aski",
-                     "silkspear_zaman"):
+                     "silkspear_zaman", "silk_bekleme"):
             v = getattr(self, attr)
             if v > 0:
                 setattr(self, attr, max(0.0, v - dt))
@@ -330,15 +342,14 @@ class Player:
     def _lava_kontrol(self, arena_obj):
         if arena_obj.lavaya_dustu_mu(self.rect):
             if self.olumsuz:
-                # Debug: lavada bile ölme, ışınla yine
-                self.isinla_orta()
+                self.isinla_orta(arena_obj)
                 return
             self.can -= LAVA_HASAR
             if self.can <= 0:
                 self.can = 0
                 self.olu = True
             else:
-                self.isinla_orta()
+                self.isinla_orta(arena_obj)
                 self.dokunulmaz = DOKUNULMAZLIK_SURE
 
     def it(self, vx, vy):
