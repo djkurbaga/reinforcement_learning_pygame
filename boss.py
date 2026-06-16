@@ -32,7 +32,7 @@ SOL_ALT_X = 230
 SAG_ALT_X = 730
 ALT_Y = 235
 
-EL_GENISLIK = 72
+EL_GENISLIK = 58
 EL_YUKSEKLIK = 44
 
 # ============================================================
@@ -43,9 +43,9 @@ FAZ_GECIS_SURE = 1.8
 
 EL_TEMAS_HASAR = 1
 OYUNCU_YUMRUK_HASAR = 5
-OYUNCU_SILKSPEAR_HASAR = 10
+OYUNCU_SILKSPEAR_HASAR = 25
 
-KNOCKBACK_DIKEY = -13.0
+KNOCKBACK_DIKEY = -17.0
 KNOCKBACK_YATAY = 7.0
 
 # Saldırılar arası bekleme
@@ -67,8 +67,8 @@ SWING_Y = arena.ZEMIN_Y - 26   # platformun üstünden 26 px yukarı (oyuncu yar
 SWING_SOL_X = 60
 SWING_SAG_X = arena.TUVAL_GENISLIK - 60   # 900
 # Kafa hareketi (swing sırasında elin yönüne doğru biraz kayar + aşağı eğilir)
-KAFA_SWING_KAYMA = 60
-KAFA_SWING_EGILME = 60
+KAFA_SWING_KAYMA = 80
+KAFA_SWING_EGILME = 80
 
 # ============================================================
 # 2. HAREKET — UST SLAM
@@ -85,8 +85,8 @@ SLAM_INIS_SURE = 0.2
 SLAM_BATIK_SURE = 5.0
 SLAM_DONUS_SURE = 0.5
 SLAM_INIS_Y = arena.ZEMIN_Y - 4   # platform ustune cok yakin (vurus noktasi)
-KAFA_SLAM_KALKMA = 80             # telegrafta yukari kalkma
-KAFA_SLAM_SAVRULMA = 100        # vurma aninda asagi savrulma
+KAFA_SLAM_KALKMA = 60             # telegrafta yukari kalkma
+KAFA_SLAM_SAVRULMA = 100          # vurma aninda asagi savrulma
 
 # ============================================================
 # 3. HAREKET — ALT ALKIS
@@ -105,6 +105,36 @@ ALKIS_DIS_OFFSET = 110            # baslangic konumundan disa kayma miktari
 ALKIS_BULUSMA_SOL_X = arena.TUVAL_GENISLIK // 2 - EL_GENISLIK // 2  # 444
 ALKIS_BULUSMA_SAG_X = arena.TUVAL_GENISLIK // 2 + EL_GENISLIK // 2  # 516
 ALKIS_Y = arena.ZEMIN_Y - 26      # oyuncu seviyesinde (swing y ile ayni)
+
+# ============================================================
+# 4. HAREKET — DORT SLAM (Faz 2+)
+# ============================================================
+# 4 el aynı anda 4 platformu gomer (1 platform guvenli kalir, rastgele).
+# Eller soldan saga: sol_alt, sol_ust, sag_ust, sag_alt (sira bozulmaz).
+# Diger slam'den daha uzun telegraf (kacis payi), daha kisa batik sure.
+DORT_SLAM_DIZIL_SURE = 0.4         # eller kafa hizasinda dizilir
+DORT_SLAM_TELEGRAF_SURE = 1.0
+DORT_SLAM_INIS_SURE = 0.3
+DORT_SLAM_DONUS_SURE = 0.7
+DORT_SLAM_BATIK_SURE = 2.0
+DORT_SLAM_DIZIL_Y = KAFA_Y         # kafanin hizasi
+# El sirasi (soldan saga gore eslestirme): sol_alt, sol_ust, sag_ust, sag_alt
+DORT_SLAM_EL_SIRASI = [2, 0, 1, 3]
+
+# ============================================================
+# FAZ ZORLUK PARAMETRELERI
+# ============================================================
+# Her faz icin hiz carpani ve bekleme suresi. Faz arttiksa saldirilar
+# hizlanir, aralarindaki bekleme azalir.
+FAZ_HIZ_CARPANLARI = [1.0, 1.15, 1.30]
+FAZ_BEKLEME_SURELERI = [1.0, 0.7, 0.4]
+
+# Idle kafa salinimi (faz 2+, saldiri sirasinda bile akmaya devam eder)
+# Profil: default -> sag yukari -> default -> sol yukari -> default
+# Periyot faza gore: faz 2 normal, faz 3 daha hizli
+IDLE_KAFA_PERIYOTLAR = [None, 2.7, 2.0]  # faz 0 idle yok, faz 1: 2.7sn, faz 2: 2.0sn
+IDLE_KAFA_YATAY = 100
+IDLE_KAFA_DIKEY = 30
 
 # ============================================================
 # RENKLER
@@ -167,7 +197,7 @@ class Boss:
 
         # State machine
         self.durum = "bekle"
-        self.bekle_kalan = BEKLE_SURE   # ilk başta bekle
+        self.bekle_kalan = 1.0   # ilk başta bekle (faz 0 default)
         self.aktif_hareket = ""         # HUD için ad
 
         # Hareket-içi zamanlayıcılar
@@ -185,12 +215,55 @@ class Boss:
         self.slam_batik_zamanlar = []
         # alt_alkis:
         self.alkis_t = 0.0
+        # dort_slam (faz 2+):
+        self.dort_slam_t = 0.0
+        self.dort_slam_hedefler = []
+        self.dort_slam_gomuldu = False
+        # Faz zorluk degerleri (init sonu _faz_ayarla cagrilacak)
+        self.hiz_carpani = 1.0
+        self.bekle_sure_aktif = 1.0
 
 
         # Animasyon
         self.faz_gecis_kalan = 0.0
         self.kafa_hit_flash = 0.0
         self.olu = False
+
+        # Idle kafa salinim zamanlayici (faz 2+ icin, saldiri sirasinda bile akar)
+        self._idle_kafa_t = 0.0
+
+        # Faz parametrelerini set et (baslangicta faz 0)
+        self._faz_ayarla()
+
+    # ============================================================
+    # IDLE KAFA OFFSET (her zaman akar, saldiri sirasinda bile)
+    # ============================================================
+    def _idle_kafa_offset(self):
+        """Mevcut idle salinim offset'ini (x, y) doner. Faz 0'da (0, 0).
+        Saldirilarin kafa hesabina eklenir."""
+        if self.faz < 1:
+            return (0.0, 0.0)
+        periyot = IDLE_KAFA_PERIYOTLAR[min(self.faz, 2)]
+        aci = 2 * math.pi * self._idle_kafa_t / periyot
+        sin_val = math.sin(aci)
+        return (IDLE_KAFA_YATAY * sin_val,
+                -IDLE_KAFA_DIKEY * abs(sin_val))
+
+    def _kafa_idle_konumuna_set(self):
+        """Kafayi mevcut idle offset'i ile konumlandirir.
+        Saldiri bitislerinde default'a sicrayis yerine kullanilir."""
+        idle_x, idle_y = self._idle_kafa_offset()
+        self.kafa_merkez = [self.kafa_temel[0] + idle_x,
+                            self.kafa_temel[1] + idle_y]
+
+    # ============================================================
+    # FAZ AYARLARI
+    # ============================================================
+    def _faz_ayarla(self):
+        """Mevcut faza gore hiz carpani ve bekleme suresini set eder."""
+        f = min(self.faz, len(FAZ_HIZ_CARPANLARI) - 1)
+        self.hiz_carpani = FAZ_HIZ_CARPANLARI[f]
+        self.bekle_sure_aktif = FAZ_BEKLEME_SURELERI[f]
 
     # ============================================================
     # HASAR
@@ -214,6 +287,7 @@ class Boss:
                 self.faz_gecis_kalan = FAZ_GECIS_SURE
                 self.durum = "faz_gecisi"
                 self._tum_elleri_pasif_konuma_dondur()
+                self._faz_ayarla()   # yeni hiz/bekleme degerleri
 
     def _tum_elleri_pasif_konuma_dondur(self):
         for el in self.eller:
@@ -233,8 +307,12 @@ class Boss:
     # STATE MACHINE
     # ============================================================
     def _sonraki_saldiriyi_sec(self):
-        """Rastgele bir saldırı seçer."""
+        """Faza gore rastgele bir saldiri secer."""
         secenekler = ["alt_swing", "ust_slam", "alt_alkis"]
+        if self.faz >= 1:
+            # dort_slam'i 2 kez ekleyerek olasiligi %40 yap (2 / 5 = 0.4)
+            secenekler.extend(["dort_slam", "dort_slam"])
+        # Faz 3 icin yeni saldiri sonra eklenecek
         secim = random.choice(secenekler)
         if secim == "alt_swing":
             self._alt_swing_baslat()
@@ -242,6 +320,8 @@ class Boss:
             self._ust_slam_baslat()
         elif secim == "alt_alkis":
             self._alt_alkis_baslat()
+        elif secim == "dort_slam":
+            self._dort_slam_baslat()
 
     # ------------------------------------------------------------
     # 1. HAREKET: ALT SWING
@@ -265,6 +345,7 @@ class Boss:
         # Eli konumunda BIRAK - ışınlanma yok
 
     def _alt_swing_guncelle(self, dt):
+        dt = dt * self.hiz_carpani   # faz hizi
         self.swing_t += dt
         ham = self.swing_t / SWING_SURE
 
@@ -273,9 +354,10 @@ class Boss:
             el = self.eller[self.swing_el_index]
             el.rect.center = el.baslangic_konum
             el.aktif = False
-            self.kafa_merkez = list(self.kafa_temel)
+            # Kafa default'a sıçramasın -> idle offset'i koru
+            self._kafa_idle_konumuna_set()
             self.durum = "bekle"
-            self.bekle_kalan = BEKLE_SURE
+            self.bekle_kalan = self.bekle_sure_aktif
             self.aktif_hareket = ""
             return
 
@@ -330,9 +412,14 @@ class Boss:
             kayma_carpan = 1.0 - _ease_in_out(
                 (ham - sweep_son) / SWING_DONUS_ORAN)
 
+        # Saldiri offset + suregelen idle offset (faz 2+ icin)
+        idle_x, idle_y = self._idle_kafa_offset()
         self.kafa_merkez[0] = (self.kafa_temel[0]
-                               + yon * KAFA_SWING_KAYMA * kayma_carpan)
-        self.kafa_merkez[1] = self.kafa_temel[1] + KAFA_SWING_EGILME * egilme
+                               + yon * KAFA_SWING_KAYMA * kayma_carpan
+                               + idle_x)
+        self.kafa_merkez[1] = (self.kafa_temel[1]
+                               + KAFA_SWING_EGILME * egilme
+                               + idle_y)
 
     # ------------------------------------------------------------
     # 2. HAREKET: UST SLAM
@@ -355,7 +442,7 @@ class Boss:
             # Yetersiz platform - oyuncu yere basacak yer kalmamali
             # Slam iptal, alt_swing'e gec
             self.durum = "bekle"
-            self.bekle_kalan = BEKLE_SURE
+            self.bekle_kalan = self.bekle_sure_aktif
             self.aktif_hareket = ""
             el.aktif = False
             return
@@ -369,6 +456,7 @@ class Boss:
         self.slam_hedef_x = (p1.centerx + p2.centerx) // 2
 
     def _ust_slam_guncelle(self, dt, arena_obj):
+        dt = dt * self.hiz_carpani
         self.slam_t += dt
         el = self.eller[self.slam_el_index]
         ebx, eby = el.baslangic_konum
@@ -382,51 +470,44 @@ class Boss:
         t_inis_son = t_telegraf_son + SLAM_INIS_SURE
         t_donus_son = t_inis_son + SLAM_DONUS_SURE
 
+        idle_x, idle_y = self._idle_kafa_offset()
         if self.slam_t < t_telegraf_son:
-            # TELEGRAF: el baslangic konumdan hedefin ustune yumusak in
             lt = _ease_in_out(self.slam_t / SLAM_TELEGRAF_SURE)
             x = ebx + (hx - ebx) * lt
             y = eby + (telegraf_y - eby) * lt
             el.rect.center = (int(x), int(y))
-            # Kafa: yukari kalk (lt 0->1)
-            self.kafa_merkez[0] = self.kafa_temel[0]
-            self.kafa_merkez[1] = self.kafa_temel[1] - KAFA_SLAM_KALKMA * lt
+            self.kafa_merkez[0] = self.kafa_temel[0] + idle_x
+            self.kafa_merkez[1] = (self.kafa_temel[1]
+                                   - KAFA_SLAM_KALKMA * lt + idle_y)
         elif self.slam_t < t_inis_son:
-            # INIS: el hizli aşağı (hızlı interpolasyon)
             lt_raw = (self.slam_t - t_telegraf_son) / SLAM_INIS_SURE
-            # Daha hızlı bir egri: kare (vurma hissi)
             lt = lt_raw * lt_raw
             x = hx
             y = telegraf_y + (inis_y - telegraf_y) * lt
             el.rect.center = (int(x), int(y))
-            # Kafa: yukaridan asagi savrulma
-            self.kafa_merkez[0] = self.kafa_temel[0]
+            self.kafa_merkez[0] = self.kafa_temel[0] + idle_x
             self.kafa_merkez[1] = (self.kafa_temel[1]
                                    - KAFA_SLAM_KALKMA * (1 - lt)
-                                   + KAFA_SLAM_SAVRULMA * lt)
+                                   + KAFA_SLAM_SAVRULMA * lt + idle_y)
 
         elif self.slam_t < t_donus_son:
-            # Donus fazinin BASLANGICINDA platformlari gom (tek seferlik)
-            # Bayrak olarak hedef listesi kullanilir; gomme sonunda temizlenir
             if self.slam_hedef_platformlar:
                 self._slam_platformlari_gom(arena_obj)
-            # DONUS: el vurus noktasindan baslangic konumuna yumusak don
             lt = _ease_in_out(
                 (self.slam_t - t_inis_son) / SLAM_DONUS_SURE)
             x = hx + (ebx - hx) * lt
             y = inis_y + (eby - inis_y) * lt
             el.rect.center = (int(x), int(y))
-            # Kafa: savrulmadan eski yerine yumusak
-            self.kafa_merkez[0] = self.kafa_temel[0]
+            self.kafa_merkez[0] = self.kafa_temel[0] + idle_x
             self.kafa_merkez[1] = (self.kafa_temel[1]
-                                   + KAFA_SLAM_SAVRULMA * (1 - lt))
+                                   + KAFA_SLAM_SAVRULMA * (1 - lt) + idle_y)
         else:
             # Bitti
             el.rect.center = el.baslangic_konum
             el.aktif = False
-            self.kafa_merkez = list(self.kafa_temel)
+            self._kafa_idle_konumuna_set()
             self.durum = "bekle"
-            self.bekle_kalan = BEKLE_SURE
+            self.bekle_kalan = self.bekle_sure_aktif
             self.aktif_hareket = ""
             # NOT: batik platformlar bekle modunda da geri gelecek
 
@@ -477,6 +558,7 @@ class Boss:
         self.eller[3].aktif = True  # sag_alt
 
     def _alt_alkis_guncelle(self, dt):
+        dt = dt * self.hiz_carpani
         self.alkis_t += dt
         sol = self.eller[2]
         sag = self.eller[3]
@@ -540,16 +622,133 @@ class Boss:
             sag.rect.center = sag.baslangic_konum
             sol.aktif = False
             sag.aktif = False
-            self.kafa_merkez = list(self.kafa_temel)
+            self._kafa_idle_konumuna_set()
             self.durum = "bekle"
-            self.bekle_kalan = BEKLE_SURE
+            self.bekle_kalan = self.bekle_sure_aktif
             self.aktif_hareket = ""
             return
 
         sol.rect.center = (int(sol_x), int(sol_y))
         sag.rect.center = (int(sag_x), int(sag_y))
-        self.kafa_merkez[0] = self.kafa_temel[0]
-        self.kafa_merkez[1] = self.kafa_temel[1] + kafa_y_off
+        idle_x, idle_y = self._idle_kafa_offset()
+        self.kafa_merkez[0] = self.kafa_temel[0] + idle_x
+        self.kafa_merkez[1] = self.kafa_temel[1] + kafa_y_off + idle_y
+
+
+    # ------------------------------------------------------------
+    # 4. HAREKET: DORT SLAM (Faz 2+)
+    # ------------------------------------------------------------
+    def _dort_slam_baslat(self):
+        """4 el aynı anda 4 platforma gelir. 1 platform rastgele güvenli.
+        En az 5 mevcut platform gerekli; yoksa saldırı iptal."""
+        mevcut = list(self._son_arena.platformlar)
+        if len(mevcut) < 5:
+            # Yetersiz platform; bekle moduna geri
+            self.durum = "bekle"
+            self.bekle_kalan = self.bekle_sure_aktif
+            self.aktif_hareket = ""
+            return
+        self.durum = "dort_slam"
+        self.aktif_hareket = "Dort slam"
+        self.dort_slam_t = 0.0
+        self.dort_slam_gomuldu = False
+
+        # Mevcut platformları soldan sağa sırala
+        mevcut.sort(key=lambda r: r.x)
+        # 1 platform "güvenli" - rastgele
+        guvenli_idx = random.randint(0, 4)
+        # Diğer 4'ü hedef (sıra korunsun - soldan sağa)
+        self.dort_slam_hedefler = [
+            p for i, p in enumerate(mevcut) if i != guvenli_idx
+        ]
+        # Tüm 4 eli aktif yap
+        for idx in DORT_SLAM_EL_SIRASI:
+            self.eller[idx].aktif = True
+
+    def _dort_slam_guncelle(self, dt, arena_obj):
+        dt = dt * self.hiz_carpani
+        self.dort_slam_t += dt
+
+        telegraf_y = arena.ZEMIN_Y - 80
+        inis_y = SLAM_INIS_Y
+        # Faz sinir zamanlari (dizil ekledik)
+        t0 = DORT_SLAM_DIZIL_SURE                          # dizil sonu
+        t1 = t0 + DORT_SLAM_TELEGRAF_SURE                  # telegraf sonu
+        t2 = t1 + DORT_SLAM_INIS_SURE                      # inis sonu
+        t3 = t2 + DORT_SLAM_DONUS_SURE                     # donus sonu
+
+        # 4 eli senkron hareket ettir
+        for i, el_idx in enumerate(DORT_SLAM_EL_SIRASI):
+            el = self.eller[el_idx]
+            ebx, eby = el.baslangic_konum
+            hedef = self.dort_slam_hedefler[i]
+            hx = hedef.centerx
+
+            if self.dort_slam_t < t0:
+                # FAZ 0 - DIZIL: baslangic -> (hedef.x, kafa hizasi)
+                lt = _ease_in_out(self.dort_slam_t / DORT_SLAM_DIZIL_SURE)
+                x = ebx + (hx - ebx) * lt
+                y = eby + (DORT_SLAM_DIZIL_Y - eby) * lt
+            elif self.dort_slam_t < t1:
+                # FAZ 1 - TELEGRAF: (hedef.x, kafa hizasi) -> hedef ustu
+                lt = _ease_in_out(
+                    (self.dort_slam_t - t0) / DORT_SLAM_TELEGRAF_SURE)
+                x = hx
+                y = DORT_SLAM_DIZIL_Y + (telegraf_y - DORT_SLAM_DIZIL_Y) * lt
+            elif self.dort_slam_t < t2:
+                # FAZ 2 - INIS: hizli asagi
+                lt_raw = (self.dort_slam_t - t1) / DORT_SLAM_INIS_SURE
+                lt = lt_raw * lt_raw
+                x = hx
+                y = telegraf_y + (inis_y - telegraf_y) * lt
+            elif self.dort_slam_t < t3:
+                # FAZ 3 - DONUS: vurus -> baslangic
+                lt = _ease_in_out(
+                    (self.dort_slam_t - t2) / DORT_SLAM_DONUS_SURE)
+                x = hx + (ebx - hx) * lt
+                y = inis_y + (eby - inis_y) * lt
+            else:
+                x, y = ebx, eby
+            el.rect.center = (int(x), int(y))
+
+        # Donus fazi basinda gomme (tek seferlik)
+        if (t2 <= self.dort_slam_t < t3 and not self.dort_slam_gomuldu):
+            for plat in self.dort_slam_hedefler:
+                if plat in arena_obj.platformlar:
+                    arena_obj.platformlar.remove(plat)
+                    self.slam_batik_platformlar.append(plat)
+                    self.slam_batik_zamanlar.append(DORT_SLAM_BATIK_SURE)
+            self.dort_slam_gomuldu = True
+
+        # Kafa: dizil/telegrafta yukari, inis savrulma + suregelen idle
+        idle_x, idle_y = self._idle_kafa_offset()
+        self.kafa_merkez[0] = self.kafa_temel[0] + idle_x
+        if self.dort_slam_t < t1:
+            lt = _ease_in_out(self.dort_slam_t / t1)
+            self.kafa_merkez[1] = (self.kafa_temel[1]
+                                   - KAFA_SLAM_KALKMA * lt + idle_y)
+        elif self.dort_slam_t < t2:
+            lt = (self.dort_slam_t - t1) / DORT_SLAM_INIS_SURE
+            lt = lt * lt
+            self.kafa_merkez[1] = (self.kafa_temel[1]
+                                   - KAFA_SLAM_KALKMA * (1 - lt)
+                                   + KAFA_SLAM_SAVRULMA * lt + idle_y)
+        elif self.dort_slam_t < t3:
+            lt = _ease_in_out(
+                (self.dort_slam_t - t2) / DORT_SLAM_DONUS_SURE)
+            self.kafa_merkez[1] = (self.kafa_temel[1]
+                                   + KAFA_SLAM_SAVRULMA * (1 - lt) + idle_y)
+
+        # Bitisi kontrol et
+        if self.dort_slam_t >= t3:
+            for idx in DORT_SLAM_EL_SIRASI:
+                el = self.eller[idx]
+                el.rect.center = el.baslangic_konum
+                el.aktif = False
+            self._kafa_idle_konumuna_set()
+            self.durum = "bekle"
+            self.bekle_kalan = self.bekle_sure_aktif
+            self.aktif_hareket = ""
 
     # ============================================================
     # ANA GÜNCELLEME
@@ -564,7 +763,7 @@ class Boss:
             self.faz_gecis_kalan = max(0.0, self.faz_gecis_kalan - dt)
             if self.faz_gecis_kalan <= 0:
                 self.durum = "bekle"
-                self.bekle_kalan = BEKLE_SURE
+                self.bekle_kalan = self.bekle_sure_aktif
             return
 
         if self.olu:
@@ -573,9 +772,18 @@ class Boss:
         # Arena referansini guncelle (her kare; ilk frame'de set olur)
         self._son_arena = self._son_arena if self._son_arena else None
 
+        # Idle kafa salinim zamanlayicisi - faz 2+ icin her zaman akar
+        # (saldiri sirasinda bile, ki saldiri uzerine eklensin)
+        if self.faz >= 1:
+            self._idle_kafa_t += dt
+
         # State machine ilerlet
         if self.durum == "bekle":
             self.bekle_kalan -= dt
+            # Bekle durumunda kafa = temel + idle offset (saldiri yok)
+            idle_x, idle_y = self._idle_kafa_offset()
+            self.kafa_merkez[0] = self.kafa_temel[0] + idle_x
+            self.kafa_merkez[1] = self.kafa_temel[1] + idle_y
             if self.bekle_kalan <= 0:
                 self._sonraki_saldiriyi_sec()
         elif self.durum == "alt_swing":
@@ -584,6 +792,8 @@ class Boss:
             self._ust_slam_guncelle(dt, self._son_arena)
         elif self.durum == "alt_alkis":
             self._alt_alkis_guncelle(dt)
+        elif self.durum == "dort_slam":
+            self._dort_slam_guncelle(dt, self._son_arena)
 
         # Batık platformlar (slam sonrasi) her kare geri sayim
         self._batik_platformlari_guncelle(dt, self._son_arena)
@@ -597,6 +807,9 @@ class Boss:
         if sk is not None and sk.colliderect(self.kafa_rect):
             self.hasar_al(OYUNCU_YUMRUK_HASAR)
             oyuncu.silk_kazan(1)
+            # Asagidan vurus (nisan yukari) -> oyuncu yukari knockback alir
+            if oyuncu.nisan == "yukari":
+                oyuncu.it(0, KNOCKBACK_DIKEY)
             if oyuncu.saldiri_zaman > 0.05:
                 oyuncu.saldiri_zaman = 0.05
         ssk = oyuncu.silkspear_kutusu()
@@ -651,13 +864,27 @@ class Boss:
 
         # Slam telegraf cercevesi (hedef platformlarda sari yanip sonen)
         if self.durum == "ust_slam" and self.slam_t < SLAM_TELEGRAF_SURE:
-            yanip_son = (math.sin(self.slam_t * 18) + 1) / 2  # 0..1
+            yanip_son = (math.sin(self.slam_t * 18) + 1) / 2
             renk_alpha = int(120 + 100 * yanip_son)
             for plat in self.slam_hedef_platformlar:
                 cerceve = pygame.Surface(
                     (plat.width + 6, plat.height + 6), pygame.SRCALPHA)
                 pygame.draw.rect(
                     cerceve, (250, 180, 60, renk_alpha),
+                    cerceve.get_rect(), width=3, border_radius=4)
+                tuval.blit(cerceve, (plat.x - 3, plat.y - 3))
+        # Dort slam telegrafi (4 platformda ayni anda)
+        # DIZIL fazi sonrasi -> donus fazina kadar goster
+        if (self.durum == "dort_slam"
+                and DORT_SLAM_DIZIL_SURE <= self.dort_slam_t
+                < DORT_SLAM_DIZIL_SURE + DORT_SLAM_TELEGRAF_SURE):
+            yanip_son = (math.sin(self.dort_slam_t * 18) + 1) / 2
+            renk_alpha = int(120 + 100 * yanip_son)
+            for plat in self.dort_slam_hedefler:
+                cerceve = pygame.Surface(
+                    (plat.width + 6, plat.height + 6), pygame.SRCALPHA)
+                pygame.draw.rect(
+                    cerceve, (250, 80, 60, renk_alpha),   # kirmizi (daha tehlikeli)
                     cerceve.get_rect(), width=3, border_radius=4)
                 tuval.blit(cerceve, (plat.x - 3, plat.y - 3))
 
