@@ -56,11 +56,11 @@ HEAL_MALIYET = 6
 HEAL_MIKTAR = 3         # can kazanımı
 
 # Silkspear (anlık yatay çubuk saldırı, mermi değil)
-SILKSPEAR_UZUNLUK = 160  # 2 platform
-SILKSPEAR_KALINLIK = 10
-SILKSPEAR_GORUNUR = 0.1  # çubuk ne kadar süre görünür (çok anlık)
-SILKSPEAR_ASKI = 0.3     # oyuncu bu süre havada asılı
-SILKSPEAR_BEKLEME = 0.75
+SILKSPEAR_UZUNLUK = 300  # 2 platform
+SILKSPEAR_KALINLIK = 25
+SILKSPEAR_GORUNUR = 0.005  # çubuk ne kadar süre görünür (çok anlık)
+SILKSPEAR_ASKI = 0.2    # oyuncu bu süre havada asılı
+SILKSPEAR_BEKLEME = 0.005
 SILKSPEAR_MALIYET = 3
 
 # Renkler

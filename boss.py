@@ -67,8 +67,8 @@ SWING_Y = arena.ZEMIN_Y - 26   # platformun üstünden 26 px yukarı (oyuncu yar
 SWING_SOL_X = 60
 SWING_SAG_X = arena.TUVAL_GENISLIK - 60   # 900
 # Kafa hareketi (swing sırasında elin yönüne doğru biraz kayar + aşağı eğilir)
-KAFA_SWING_KAYMA = 80
-KAFA_SWING_EGILME = 80
+KAFA_SWING_KAYMA = 100
+KAFA_SWING_EGILME = 100
 
 # ============================================================
 # 2. HAREKET — UST SLAM
@@ -118,6 +118,30 @@ DORT_SLAM_INIS_SURE = 0.3
 DORT_SLAM_DONUS_SURE = 0.7
 DORT_SLAM_BATIK_SURE = 2.0
 DORT_SLAM_DIZIL_Y = KAFA_Y         # kafanin hizasi
+
+# ============================================================
+# 5. HAREKET — YAGMUR KAYA (Faz 3) 
+# ============================================================
+# Eller kafanin yukarisinda dizilir, sirasiz 3'er yukari vurus, sonra
+# yukaridan 8 kaya 5 sn boyunca dusen yagmur baslar. Yagmur paralel akar;
+# patron sonraki saldiriya gecebilir bu sirada.
+YAGMUR_DIZIL_SURE = 0.4
+YAGMUR_CIRPINMA_SURE = 1.2
+YAGMUR_DONUS_SURE = 0.5
+YAGMUR_DIZIL_Y = 60                # kafa ust kenari ~80, eller 60'ta
+YAGMUR_VURUS_YUKSEKLIK = 35        # vurus aninda dizilim'den ne kadar yukari
+# Eller dizilim x'leri (soldan saga 4 esit nokta)
+YAGMUR_DIZIL_X = [240, 400, 560, 720]
+
+# Yagmur (paralel akar):
+YAGMUR_KAYA_SAYISI = 8
+YAGMUR_SURESI = 5.0                # yagmur baslangictan toplam sure
+YAGMUR_KAYA_HIZI = 5.0             # px/kare (60 fps'de ~1.3 sn'de duser)
+YAGMUR_KAYA_BOYUT = 20
+YAGMUR_KAYA_X_SOL = 40
+YAGMUR_KAYA_X_SAG = arena.TUVAL_GENISLIK - 60
+RENK_KAYA = (130, 80, 55)
+RENK_KAYA_KENAR = (70, 40, 25)
 # El sirasi (soldan saga gore eslestirme): sol_alt, sol_ust, sag_ust, sag_alt
 DORT_SLAM_EL_SIRASI = [2, 0, 1, 3]
 
@@ -133,8 +157,9 @@ FAZ_BEKLEME_SURELERI = [1.0, 0.7, 0.4]
 # Profil: default -> sag yukari -> default -> sol yukari -> default
 # Periyot faza gore: faz 2 normal, faz 3 daha hizli
 IDLE_KAFA_PERIYOTLAR = [None, 2.7, 2.0]  # faz 0 idle yok, faz 1: 2.7sn, faz 2: 2.0sn
-IDLE_KAFA_YATAY = 100
+IDLE_KAFA_YATAY = 200
 IDLE_KAFA_DIKEY = 30
+IDLE_KAFA_MERKEZ_KAYMA = 25  # idle merkezi temel'in bu kadar ALTINDA olsun
 
 # ============================================================
 # RENKLER
@@ -219,6 +244,14 @@ class Boss:
         self.dort_slam_t = 0.0
         self.dort_slam_hedefler = []
         self.dort_slam_gomuldu = False
+        # yagmur_kaya (faz 3):
+        self.yagmur_t = 0.0
+        self.yagmur_vurus_zamanlari = []    # her el icin 3 vurus zamani
+        # Yagmur paralel akis (saldiri durumu disinda da)
+        self.yagan_kayalar = []             # liste of pygame.Rect
+        self.kaya_yagmuru_kalan = 0.0       # yagmur kalan suresi (sn)
+        self.kaya_uretim_kalan = 0.0        # sonraki kaya uretimine kalan
+        self.kaya_uretilecek = 0            # uretilecek kalan kaya sayisi
         # Faz zorluk degerleri (init sonu _faz_ayarla cagrilacak)
         self.hiz_carpani = 1.0
         self.bekle_sure_aktif = 1.0
@@ -240,14 +273,16 @@ class Boss:
     # ============================================================
     def _idle_kafa_offset(self):
         """Mevcut idle salinim offset'ini (x, y) doner. Faz 0'da (0, 0).
-        Saldirilarin kafa hesabina eklenir."""
+        Y'ye merkez kayma eklenir; boylece idle merkezi temel'den asagida olur,
+        zirvesinde temel'e yakin gelir (asiri yukari cikmaz)."""
         if self.faz < 1:
             return (0.0, 0.0)
         periyot = IDLE_KAFA_PERIYOTLAR[min(self.faz, 2)]
         aci = 2 * math.pi * self._idle_kafa_t / periyot
         sin_val = math.sin(aci)
+        # x: salinim, y: merkez asagida + zirvelerde yukari hareket
         return (IDLE_KAFA_YATAY * sin_val,
-                -IDLE_KAFA_DIKEY * abs(sin_val))
+                IDLE_KAFA_MERKEZ_KAYMA - IDLE_KAFA_DIKEY * abs(sin_val))
 
     def _kafa_idle_konumuna_set(self):
         """Kafayi mevcut idle offset'i ile konumlandirir.
@@ -310,9 +345,9 @@ class Boss:
         """Faza gore rastgele bir saldiri secer."""
         secenekler = ["alt_swing", "ust_slam", "alt_alkis"]
         if self.faz >= 1:
-            # dort_slam'i 2 kez ekleyerek olasiligi %40 yap (2 / 5 = 0.4)
             secenekler.extend(["dort_slam", "dort_slam"])
-        # Faz 3 icin yeni saldiri sonra eklenecek
+        if self.faz >= 2:
+            secenekler.append("yagmur_kaya")
         secim = random.choice(secenekler)
         if secim == "alt_swing":
             self._alt_swing_baslat()
@@ -322,6 +357,8 @@ class Boss:
             self._alt_alkis_baslat()
         elif secim == "dort_slam":
             self._dort_slam_baslat()
+        elif secim == "yagmur_kaya":
+            self._yagmur_kaya_baslat()
 
     # ------------------------------------------------------------
     # 1. HAREKET: ALT SWING
@@ -750,6 +787,126 @@ class Boss:
             self.bekle_kalan = self.bekle_sure_aktif
             self.aktif_hareket = ""
 
+    # ------------------------------------------------------------
+    # 5. HAREKET: YAGMUR KAYA (Faz 3)
+    # ------------------------------------------------------------
+    def _yagmur_kaya_baslat(self):
+        """Tum 4 el dizilir, rastgele 3'er vurus, sonra yagmur baslar.
+        Yagmur saldiri bitince paralel akmaya devam eder."""
+        self.durum = "yagmur_kaya"
+        self.aktif_hareket = "Yagmur kaya"
+        self.yagmur_t = 0.0
+        # Her el icin 3 vurus zamani (0 - 0.8 sn arasi sirali)
+        self.yagmur_vurus_zamanlari = []
+        for _ in range(4):
+            zamanlar = sorted([random.uniform(0.0, 0.8) for _ in range(3)])
+            self.yagmur_vurus_zamanlari.append(zamanlar)
+        # Tum elleri aktif yap
+        for el in self.eller:
+            el.aktif = True
+
+    def _yagmur_kaya_guncelle(self, dt):
+        dt = dt * self.hiz_carpani
+        self.yagmur_t += dt
+
+        # Faz sinirlari
+        t0 = YAGMUR_DIZIL_SURE
+        t1 = t0 + YAGMUR_CIRPINMA_SURE
+        t2 = t1 + YAGMUR_DONUS_SURE
+
+        for i, el in enumerate(self.eller):
+            ebx, eby = el.baslangic_konum
+            dizil_x = YAGMUR_DIZIL_X[i]
+            dizil_y = YAGMUR_DIZIL_Y
+
+            if self.yagmur_t < t0:
+                # FAZ 0 - DIZIL: baslangic -> dizilim konumu
+                lt = _ease_in_out(self.yagmur_t / YAGMUR_DIZIL_SURE)
+                x = ebx + (dizil_x - ebx) * lt
+                y = eby + (dizil_y - eby) * lt
+            elif self.yagmur_t < t1:
+                # FAZ 1 - CIRPINMA: dizilim konumunda rastgele vuruslar
+                cirp_t = self.yagmur_t - t0
+                x = dizil_x
+                y = dizil_y
+                # Bu elin vurus zamanlari icinde miyiz?
+                for v_zaman in self.yagmur_vurus_zamanlari[i]:
+                    if v_zaman <= cirp_t < v_zaman + 0.2:
+                        # Vurus profili: 0 -> -YUKSEKLIK -> 0 (sin)
+                        vurus_t = (cirp_t - v_zaman) / 0.2
+                        y = dizil_y - YAGMUR_VURUS_YUKSEKLIK * math.sin(
+                            math.pi * vurus_t)
+                        break
+            elif self.yagmur_t < t2:
+                # FAZ 2 - DONUS: dizilim -> baslangic
+                lt = _ease_in_out((self.yagmur_t - t1) / YAGMUR_DONUS_SURE)
+                x = dizil_x + (ebx - dizil_x) * lt
+                y = dizil_y + (eby - dizil_y) * lt
+            else:
+                x, y = ebx, eby
+            el.rect.center = (int(x), int(y))
+
+        # CIRPINMA bitince yagmuru BASLAT (tek seferlik)
+        if (self.yagmur_t >= t1 and self.kaya_yagmuru_kalan <= 0
+                and self.kaya_uretilecek == 0):
+            self.kaya_yagmuru_kalan = YAGMUR_SURESI
+            self.kaya_uretilecek = YAGMUR_KAYA_SAYISI
+            self.kaya_uretim_kalan = 0.0   # ilk kaya hemen uretilir
+
+        # Bitis: DONUS bitti -> bekle moduna gec
+        if self.yagmur_t >= t2:
+            for el in self.eller:
+                el.rect.center = el.baslangic_konum
+                el.aktif = False
+            self._kafa_idle_konumuna_set()
+            self.durum = "bekle"
+            self.bekle_kalan = self.bekle_sure_aktif
+            self.aktif_hareket = ""
+
+    def _yagan_kayalari_guncelle(self, dt, arena_obj, oyuncu):
+        """Yagmur paralel akar: kayalar uretilir, asagi duser, carpisma kontrol.
+        Patron durumu ne olursa olsun (saldiri yapiyorken bile) calisir."""
+        # Yeni kaya uretimi
+        if self.kaya_uretilecek > 0 and self.kaya_yagmuru_kalan > 0:
+            self.kaya_uretim_kalan -= dt
+            if self.kaya_uretim_kalan <= 0:
+                # Yeni kaya: tuvalin uzerinden duser, rastgele x
+                kx = random.randint(YAGMUR_KAYA_X_SOL, YAGMUR_KAYA_X_SAG)
+                kaya = pygame.Rect(kx, -YAGMUR_KAYA_BOYUT,
+                                   YAGMUR_KAYA_BOYUT, YAGMUR_KAYA_BOYUT)
+                self.yagan_kayalar.append(kaya)
+                self.kaya_uretilecek -= 1
+                # Sabit aralik: yagmur suresi / toplam kaya
+                self.kaya_uretim_kalan = (YAGMUR_SURESI
+                                          / YAGMUR_KAYA_SAYISI)
+
+        # Yagmur suresi azalt
+        if self.kaya_yagmuru_kalan > 0:
+            self.kaya_yagmuru_kalan = max(0.0,
+                                          self.kaya_yagmuru_kalan - dt)
+
+        # Mevcut kayalari hareket ettir + carpisma kontrol
+        yeni_kayalar = []
+        for kaya in self.yagan_kayalar:
+            kaya.y += int(YAGMUR_KAYA_HIZI)
+            # Oyuncuya carpti mi?
+            if kaya.colliderect(oyuncu.rect):
+                oyuncu.hasar_al(1)
+                continue   # kaya yok olur
+            # Platforma carpti mi?
+            carpti_platform = False
+            for plat in arena_obj.platformlar:
+                if kaya.colliderect(plat):
+                    carpti_platform = True
+                    break
+            if carpti_platform:
+                continue
+            # Lavaya/zemine vardi mi?
+            if kaya.y > arena.ZEMIN_Y:
+                continue
+            yeni_kayalar.append(kaya)
+        self.yagan_kayalar = yeni_kayalar
+
     # ============================================================
     # ANA GÜNCELLEME
     # ============================================================
@@ -794,6 +951,12 @@ class Boss:
             self._alt_alkis_guncelle(dt)
         elif self.durum == "dort_slam":
             self._dort_slam_guncelle(dt, self._son_arena)
+        elif self.durum == "yagmur_kaya":
+            self._yagmur_kaya_guncelle(dt)
+
+        # Yagan kayalar HER ZAMAN akar (saldiri yapiyorken bile)
+        if self._son_arena is not None:
+            self._yagan_kayalari_guncelle(dt, self._son_arena, oyuncu)
 
         # Batık platformlar (slam sonrasi) her kare geri sayim
         self._batik_platformlari_guncelle(dt, self._son_arena)
@@ -807,9 +970,6 @@ class Boss:
         if sk is not None and sk.colliderect(self.kafa_rect):
             self.hasar_al(OYUNCU_YUMRUK_HASAR)
             oyuncu.silk_kazan(1)
-            # Asagidan vurus (nisan yukari) -> oyuncu yukari knockback alir
-            if oyuncu.nisan == "yukari":
-                oyuncu.it(0, KNOCKBACK_DIKEY)
             if oyuncu.saldiri_zaman > 0.05:
                 oyuncu.saldiri_zaman = 0.05
         ssk = oyuncu.silkspear_kutusu()
@@ -819,25 +979,18 @@ class Boss:
             if oyuncu.silkspear_zaman > 0.05:
                 oyuncu.silkspear_zaman = 0.05
 
-        # === Oyuncu -> El knockback (hasar yok) ===
+        # === Oyuncu -> El (knockback YOK, sadece saldiri tuket) ===
+        # El'e değmek tek başına bir şey yapmaz; el'in oyuncuya teması zaten
+        # asagidaki blokta hasar olarak işleniyor.
         if sk is not None:
             for el in self.eller:
                 if sk.colliderect(el.rect):
-                    if oyuncu.nisan == "yukari":
-                        oyuncu.it(0, KNOCKBACK_DIKEY)
-                    elif oyuncu.nisan == "asagi":
-                        oyuncu.it(0, KNOCKBACK_DIKEY * 0.6)
-                    else:
-                        yon = -1 if oyuncu.bakis == "sag" else 1
-                        oyuncu.it(KNOCKBACK_YATAY * yon, -4.0)
                     if oyuncu.saldiri_zaman > 0.05:
                         oyuncu.saldiri_zaman = 0.05
                     break
         if ssk is not None:
             for el in self.eller:
                 if ssk.colliderect(el.rect):
-                    yon = -1 if oyuncu.bakis == "sag" else 1
-                    oyuncu.it(KNOCKBACK_YATAY * yon, -6.0)
                     if oyuncu.silkspear_zaman > 0.05:
                         oyuncu.silkspear_zaman = 0.05
                     break
@@ -891,6 +1044,12 @@ class Boss:
         self._ciz_kafa(tuval, solgun=self.olu)
         for el in self.eller:
             el.ciz(tuval)
+
+        # Yagan kayalar (her zaman cizilir, varsa)
+        for kaya in self.yagan_kayalar:
+            pygame.draw.rect(tuval, RENK_KAYA, kaya, border_radius=3)
+            pygame.draw.rect(tuval, RENK_KAYA_KENAR, kaya, width=2,
+                             border_radius=3)
 
     def _ciz_kafa(self, tuval, solgun=False):
         renk = RENK_KAFA
